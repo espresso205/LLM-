@@ -1,0 +1,65 @@
+/* ===== Gateway - Premium Dark Theme ===== */
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: #111827;
+  color: #f3f4f6;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #111827; }
+::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+.el-header { padding: 0 20px !important; }
+
+* { transition: background-color 0.15s ease, border-color 0.15s ease; }
+
+.el-card {
+  background-color: #1f2937 !important;
+  border: 1px solid #374151 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important;
+  color: #f3f4f6 !important;
+}
+.el-card__header { border-bottom: 1px solid #374151 !important; color: #f3f4f6 !important; }
+
+.el-table {
+  --el-table-bg-color: #1f2937;
+  --el-table-tr-bg-color: #1f2937;
+  --el-table-header-bg-color: #111827;
+  --el-table-row-hover-bg-color: #374151;
+  --el-table-border-color: #374151;
+  --el-table-text-color: #f3f4f6;
+  --el-table-header-text-color: #9ca3af;
+}
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: #1a2332 !important;
+}
+.el-table__body tr:hover > td.el-table__cell {
+  background-color: #374151 !important;
+}
+
+.el-dialog { --el-dialog-bg-color: #1f2937; border-radius: 8px; }
+
+.el-input__wrapper, .el-textarea__inner {
+  background-color: #111827 !important;
+  box-shadow: 0 0 0 1px #374151 inset !important;
+  color: #f3f4f6 !important;
+}
+.el-input__inner { color: #f3f4f6 !important; }
+
+.el-descriptions { --el-descriptions-table-border: 1px solid #374151; }
+.el-descriptions__body { background-color: #1f2937 !important; }
+.el-descriptions__label { color: #9ca3af !important; background-color: #111827 !important; }
+.el-descriptions__content { color: #f3f4f6 !important; background-color: #1f2937 !important; }
+
+.el-pagination {
+  --el-pagination-bg-color: transparent;
+  --el-pagination-text-color: #9ca3af;
+  --el-pagination-button-disabled-bg-color: transparent;
+}
+
+.el-statistic__head { color: #9ca3af !important; }
+.el-statistic__content { color: #f3f4f6 !important; }

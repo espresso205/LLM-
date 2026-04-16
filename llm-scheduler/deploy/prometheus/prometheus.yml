@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: 'gateway'
+    static_configs:
+      - targets: ['172.17.64.1:8080']
+        labels:
+          service: 'gateway'
+
+  - job_name: 'scheduler'
+    static_configs:
+      - targets: ['172.17.64.1:8001']
+        labels:
+          service: 'scheduler'
+
+  - job_name: 'monitoring'
+    static_configs:
+      - targets: ['172.17.64.1:8002']
+        labels:
+          service: 'monitoring'
+
+  - job_name: 'inference-node-1'
+    static_configs:
+      - targets: ['172.17.64.1:8003']
+        labels:
+          service: 'inference-node'
+          node_id: 'node-1'
+
+  - job_name: 'inference-node-2'
+    static_configs:
+      - targets: ['172.17.64.1:8004']
+        labels:
+          service: 'inference-node'
+          node_id: 'node-2'
+
+  - job_name: 'vllm'
+    static_configs:
+      - targets: ['172.17.77.32:8000']
+        labels:
+          service: 'vllm'
