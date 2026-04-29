@@ -81,3 +81,85 @@ async def forward_with_retry(request_id: str, payload: dict) -> tuple[dict, str,
             await asyncio.sleep(wait)
 
     raise last_exc  # type: ignore[misc]
+
+
+async def forward_with_retry_stream(request_id: str, payload: dict):
+    """
+    Streaming variant of forward_with_retry.
+    Yields raw SSE bytes from the selected node.
+    Retries only during node selection / connection phase;
+    once streaming starts, no further retries are attempted.
+    Returns a tuple: (async_generator, node_id, resolved_model)
+    """
+    tried: list[str] = []
+    last_exc: Exception | None = None
+    resolved_model = ""
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            sched = await _pick_node(request_id, tried)
+        except Exception as exc:
+            raise RuntimeError(f"Scheduler unavailable: {exc}") from exc
+
+        node_id = sched["node_id"]
+        node_url = sched["node_url"]
+        tried.append(node_id)
+
+        # Resolve "auto" model name
+        actual_payload = payload
+        if payload.get("model") in ("auto", "", None):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as c:
+                    mr = await c.get(f"{node_url}/api/model",
+                                     headers={"X-Internal-Token": settings.INTERNAL_TOKEN})
+                    if mr.status_code == 200:
+                        models = mr.json().get("data", [])
+                        if models:
+                            resolved_model = models[0]["id"]
+                            actual_payload = {**payload, "model": resolved_model}
+            except Exception:
+                pass
+        else:
+            resolved_model = payload.get("model", "")
+
+        try:
+            # Try to open a streaming connection
+            client = httpx.AsyncClient(timeout=180.0)
+            req = client.stream(
+                "POST",
+                f"{node_url}/v1/chat/completions",
+                json=actual_payload,
+            )
+            response = await req.__aenter__()  # establish connection
+
+            if response.status_code in RETRY_STATUS:
+                await req.__aexit__(None, None, None)
+                await client.aclose()
+                raise httpx.HTTPStatusError(
+                    f"Retryable {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
+            response.raise_for_status()
+
+            # Connection successful — create generator that yields chunks
+            async def _stream_and_cleanup():
+                try:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+                finally:
+                    await req.__aexit__(None, None, None)
+                    await client.aclose()
+
+            return _stream_and_cleanup(), node_id, resolved_model
+
+        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            wait = 0.1 * (2 ** attempt)
+            log.warning(
+                f"Stream request {request_id} attempt {attempt + 1} via {node_id} failed: {exc}. "
+                f"Retrying in {wait:.2f}s"
+            )
+            await asyncio.sleep(wait)
+
+    raise last_exc  # type: ignore[misc]

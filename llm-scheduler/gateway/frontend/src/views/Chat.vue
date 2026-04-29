@@ -40,6 +40,21 @@
           <el-icon :size="18"><TrendCharts /></el-icon>
         </div>
       </el-tooltip>
+
+      <el-tooltip placement="right" :show-after="100">
+        <template #content>
+          <div style="max-width:240px;line-height:1.6;">
+            <b>流式输出 (Streaming)</b><br/>
+            开启后回复将逐字显示，无需等待完整生成。关闭则等待完整回复后一次性显示。
+          </div>
+        </template>
+        <div class="setting-btn" @click="useStream = !useStream" :class="{active: useStream}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14"/>
+            <path d="M12 5l7 7-7 7"/>
+          </svg>
+        </div>
+      </el-tooltip>
     </div>
 
     <!-- Left floating panels (appear on click) -->
@@ -164,6 +179,7 @@ const enhancing = ref(false)
 const showTokens = ref(false)
 const showTemp = ref(false)
 const showTopP = ref(false)
+const useStream = ref(false)
 
 function triggerUpload() { fileInput.value?.click() }
 
@@ -239,6 +255,14 @@ async function send() {
     content: buildContent(m.content, m.images),
   }))
 
+  if (useStream.value) {
+    await sendStream(chatMessages)
+  } else {
+    await sendNonStream(chatMessages)
+  }
+}
+
+async function sendNonStream(chatMessages) {
   try {
     const start = Date.now()
     const { data } = await client.post('/v1/chat/completions', {
@@ -256,6 +280,103 @@ async function send() {
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '推理失败，请重试')
     messages.value.push({ role: 'assistant', content: '推理失败: ' + (e.response?.data?.detail || e.message) })
+  } finally {
+    loading.value = false
+    await scrollToBottom()
+  }
+}
+
+async function sendStream(chatMessages) {
+  // Add a placeholder assistant message that we'll update in-place
+  const assistantIdx = messages.value.length
+  messages.value.push({ role: 'assistant', content: '' })
+  const start = Date.now()
+
+  try {
+    const auth = JSON.parse(localStorage.getItem('auth') || '{}')
+    const token = auth.token || ''
+    const resp = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model: 'auto',
+        messages: chatMessages,
+        stream: true,
+        ...params,
+      }),
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }))
+      throw new Error(err.detail || 'Stream request failed')
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let totalTokens = null
+    let nodeId = null
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        // Parse SSE events
+        if (line.startsWith('event: meta')) {
+          // Next data line has node metadata
+          continue
+        }
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') continue
+
+        try {
+          const parsed = JSON.parse(raw)
+
+          // Meta event with node info
+          if (parsed._node_id) {
+            nodeId = parsed._node_id
+            continue
+          }
+          // Error event
+          if (parsed.error) {
+            throw new Error(parsed.error)
+          }
+
+          // Extract content delta
+          const delta = parsed.choices?.[0]?.delta?.content
+          if (delta) {
+            messages.value[assistantIdx].content += delta
+            await scrollToBottom()
+          }
+
+          // Capture usage from the last chunk
+          if (parsed.usage) {
+            totalTokens = parsed.usage.total_tokens
+          }
+        } catch (e) {
+          if (e.message && !e.message.includes('JSON')) throw e
+        }
+      }
+    }
+
+    lastInfo.value = {
+      latency_ms: Date.now() - start,
+      total_tokens: totalTokens,
+      node_id: nodeId,
+    }
+  } catch (e) {
+    const content = messages.value[assistantIdx].content
+    messages.value[assistantIdx].content = content + (content ? '\n' : '') + '[流式错误: ' + e.message + ']'
+    ElMessage.error('流式推理失败')
   } finally {
     loading.value = false
     await scrollToBottom()

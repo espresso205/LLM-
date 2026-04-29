@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     SCHEDULER_URL: str = "http://localhost:8001"
     MONITORING_URL: str = "http://localhost:8002"
     DATABASE_URL: str = "node.db"
-    HEARTBEAT_INTERVAL_S: int = 10
+    HEARTBEAT_INTERVAL_S: int = 3
     INTERNAL_TOKEN: str = "internal-secret-change-me"
 
     model_config = {"env_file": ".env", "extra": "ignore"}

@@ -3,11 +3,13 @@ from .base import SchedulingStrategy
 from .round_robin import RoundRobinStrategy
 from .least_connections import LeastConnectionsStrategy
 from .weighted import WeightedRoundRobinStrategy
+from .gpu_aware import GPUAwareStrategy
 
 STRATEGIES: dict[str, type[SchedulingStrategy]] = {
     "round_robin": RoundRobinStrategy,
     "least_connections": LeastConnectionsStrategy,
     "weighted": WeightedRoundRobinStrategy,
+    "gpu_aware": GPUAwareStrategy,
 }
 
 _active: SchedulingStrategy = RoundRobinStrategy()

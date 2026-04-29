@@ -4,12 +4,12 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import connection_counter
 from ..config import settings
 from ..database import get_db
-from ..vllm_client import forward_chat_completion
+from ..vllm_client import forward_chat_completion, forward_chat_completion_stream
 from shared.utils import get_logger, timer
 
 log = get_logger(__name__)
@@ -17,8 +17,19 @@ router = APIRouter()
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: Request) -> JSONResponse:
+async def chat_completions(request: Request):
     body = await request.json()
+
+    # ── Streaming path ─────────────────────────────────────────────────────
+    if body.get("stream"):
+        return await _handle_stream(body)
+
+    # ── Non-streaming path (original) ──────────────────────────────────────
+    return await _handle_non_stream(body)
+
+
+async def _handle_non_stream(body: dict) -> JSONResponse:
+    """Original non-streaming logic, unchanged."""
     request_id = str(uuid.uuid4())
     db = await get_db()
 
@@ -53,7 +64,6 @@ async def chat_completions(request: Request) -> JSONResponse:
         await connection_counter.decrement()
         completed = datetime.now(timezone.utc).isoformat()
 
-        # Record minute-level metrics bucket
         bucket = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
         try:
             await db.execute(
@@ -91,3 +101,73 @@ async def chat_completions(request: Request) -> JSONResponse:
             await db.commit()
         except Exception as db_exc:
             log.error(f"Failed to log request {request_id} to database: {db_exc}")
+
+
+async def _handle_stream(body: dict) -> StreamingResponse:
+    """Stream SSE chunks from vLLM through to the caller."""
+    request_id = str(uuid.uuid4())
+    db = await get_db()
+    started = datetime.now(timezone.utc).isoformat()
+
+    await connection_counter.increment()
+
+    async def _generate():
+        status = "error"
+        latency_ms = 0.0
+        try:
+            import time
+            t0 = time.perf_counter()
+            async for chunk in forward_chat_completion_stream(body):
+                yield chunk
+            latency_ms = (time.perf_counter() - t0) * 1000
+            status = "success"
+        except Exception as exc:
+            log.error(f"[{settings.NODE_ID}] stream {request_id} FAILED: {exc}")
+            # Send an SSE error event so the client knows it failed
+            error_data = json.dumps({"error": str(exc)})
+            yield f"data: {error_data}\n\n".encode()
+        finally:
+            await connection_counter.decrement()
+            # Log to DB
+            bucket = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+            try:
+                await db.execute(
+                    """
+                    INSERT INTO metrics_1m (bucket, request_count, error_count, total_latency, max_latency)
+                    VALUES (?, 1, ?, ?, ?)
+                    ON CONFLICT(bucket) DO UPDATE SET
+                        request_count = request_count + 1,
+                        error_count   = error_count + excluded.error_count,
+                        total_latency = total_latency + excluded.total_latency,
+                        max_latency   = MAX(max_latency, excluded.max_latency)
+                    """,
+                    (bucket, 1 if status == "error" else 0, latency_ms, latency_ms),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO request_log
+                        (id, request_body, status, latency_ms, model, error_message, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request_id,
+                        json.dumps(body),
+                        status,
+                        latency_ms,
+                        body.get("model", ""),
+                        None if status == "success" else "stream error",
+                        started,
+                    ),
+                )
+                await db.commit()
+            except Exception as db_exc:
+                log.error(f"Failed to log stream {request_id}: {db_exc}")
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

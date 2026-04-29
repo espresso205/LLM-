@@ -1,0 +1,11 @@
+# IDE
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Claude
+.claude/
+
+# Ignore root-level scripts
+main.py

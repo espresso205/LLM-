@@ -8,6 +8,7 @@ from .. import connection_counter
 from ..config import settings
 from ..database import get_db
 from ..vllm_client import check_vllm_health, get_model_info
+from ..gpu_collector import collect_gpu_metrics
 
 router = APIRouter()
 
@@ -49,6 +50,8 @@ async def metrics_json():
     avg_lat = (total_lat / total_req) if total_req > 0 else 0.0
     success_rate = ((total_req - total_err) / total_req) if total_req > 0 else 1.0
 
+    gpu = await collect_gpu_metrics()
+
     return {
         "source": f"node:{settings.NODE_ID}",
         "ts": now.isoformat(),
@@ -58,4 +61,12 @@ async def metrics_json():
         "success_rate": round(success_rate, 4),
         "error_count": total_err,
         "active_conns": connection_counter.value,
+        "gpu_util": gpu.get("gpu_util"),
+        "memory_used_gb": gpu.get("memory_used_gb"),
+        "gpu_memory_total_gb": gpu.get("gpu_memory_total_gb"),
+        "gpu_temperature": gpu.get("gpu_temperature"),
+        "kv_cache_usage": gpu.get("kv_cache_usage"),
+        "avg_token_latency": gpu.get("avg_token_latency"),
+        "num_requests_running": gpu.get("num_requests_running"),
+        "num_requests_waiting": gpu.get("num_requests_waiting"),
     }

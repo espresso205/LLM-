@@ -92,6 +92,12 @@ class HeartbeatRequest(BaseModel):
     status: str = "healthy"
     gpu_util: Optional[float] = None
     memory_used_gb: Optional[float] = None
+    gpu_memory_total_gb: Optional[float] = None
+    gpu_temperature: Optional[float] = None
+    kv_cache_usage: Optional[float] = None
+    avg_token_latency: Optional[float] = None
+    num_requests_running: Optional[int] = None
+    num_requests_waiting: Optional[int] = None
 
 class NodeInfo(BaseModel):
     node_id: str

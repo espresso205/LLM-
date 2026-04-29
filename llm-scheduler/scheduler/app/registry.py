@@ -22,6 +22,12 @@ class NodeInfo:
     registered_at: str = ""
     gpu_util: Optional[float] = None
     memory_used_gb: Optional[float] = None
+    gpu_memory_total_gb: Optional[float] = None
+    gpu_temperature: Optional[float] = None
+    kv_cache_usage: Optional[float] = None
+    avg_token_latency: Optional[float] = None
+    num_requests_running: Optional[int] = None
+    num_requests_waiting: Optional[int] = None
 
     @property
     def url(self) -> str:
@@ -47,7 +53,10 @@ class NodeRegistry:
             return False
 
     async def heartbeat(self, node_id: str, active_connections: int,
-                        status: str, gpu_util=None, memory_used_gb=None) -> bool:
+                        status: str, gpu_util=None, memory_used_gb=None,
+                        gpu_memory_total_gb=None, gpu_temperature=None,
+                        kv_cache_usage=None, avg_token_latency=None,
+                        num_requests_running=None, num_requests_waiting=None) -> bool:
         async with self._lock:
             if node := self._nodes.get(node_id):
                 node.last_heartbeat = time.monotonic()
@@ -57,6 +66,18 @@ class NodeRegistry:
                     node.gpu_util = gpu_util
                 if memory_used_gb is not None:
                     node.memory_used_gb = memory_used_gb
+                if gpu_memory_total_gb is not None:
+                    node.gpu_memory_total_gb = gpu_memory_total_gb
+                if gpu_temperature is not None:
+                    node.gpu_temperature = gpu_temperature
+                if kv_cache_usage is not None:
+                    node.kv_cache_usage = kv_cache_usage
+                if avg_token_latency is not None:
+                    node.avg_token_latency = avg_token_latency
+                if num_requests_running is not None:
+                    node.num_requests_running = num_requests_running
+                if num_requests_waiting is not None:
+                    node.num_requests_waiting = num_requests_waiting
                 return True
             return False
 

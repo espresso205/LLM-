@@ -1,1 +1,0 @@
-import{i as r,u as o}from"./index-Csp33JU-.js";const s=r.create({baseURL:"/"});s.interceptors.request.use(e=>{const t=o();return t.token&&(e.headers.Authorization=`Bearer ${t.token}`),e});s.interceptors.response.use(e=>e,e=>{var t;return((t=e.response)==null?void 0:t.status)===401&&(o().logout(),window.location.href="/login"),Promise.reject(e)});export{s as c};

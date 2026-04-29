@@ -3,6 +3,8 @@ import asyncio
 import httpx
 from .config import settings
 from . import connection_counter
+from .gpu_collector import collect_gpu_metrics
+from .vllm_client import check_vllm_health
 from shared.utils import get_logger
 
 log = get_logger(__name__)
@@ -39,9 +41,12 @@ async def heartbeat_loop() -> None:
     headers = {"X-Internal-Token": settings.INTERNAL_TOKEN}
     while True:
         try:
+            vllm_ok = await check_vllm_health()
+            gpu_metrics = await collect_gpu_metrics()
             payload = {
                 "active_connections": connection_counter.value,
-                "status": "healthy",
+                "status": "healthy" if vllm_ok else "unhealthy",
+                **gpu_metrics,
             }
             async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.post(

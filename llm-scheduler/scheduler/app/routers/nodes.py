@@ -45,6 +45,12 @@ async def heartbeat(node_id: str, body: HeartbeatRequest):
         status=body.status,
         gpu_util=body.gpu_util,
         memory_used_gb=body.memory_used_gb,
+        gpu_memory_total_gb=body.gpu_memory_total_gb,
+        gpu_temperature=body.gpu_temperature,
+        kv_cache_usage=body.kv_cache_usage,
+        avg_token_latency=body.avg_token_latency,
+        num_requests_running=body.num_requests_running,
+        num_requests_waiting=body.num_requests_waiting,
     )
     if not found:
         raise HTTPException(status_code=404, detail=f"Node {node_id} not registered")
@@ -70,6 +76,14 @@ async def list_nodes():
             "active_connections": n.active_connections,
             "url": n.url,
             "registered_at": n.registered_at,
+            "gpu_util": n.gpu_util,
+            "memory_used_gb": n.memory_used_gb,
+            "gpu_memory_total_gb": n.gpu_memory_total_gb,
+            "gpu_temperature": n.gpu_temperature,
+            "kv_cache_usage": n.kv_cache_usage,
+            "avg_token_latency": n.avg_token_latency,
+            "num_requests_running": n.num_requests_running,
+            "num_requests_waiting": n.num_requests_waiting,
         }
         for n in nodes
     ]
@@ -89,6 +103,14 @@ async def get_node(node_id: str):
         "active_connections": node.active_connections,
         "url": node.url,
         "registered_at": node.registered_at,
+        "gpu_util": node.gpu_util,
+        "memory_used_gb": node.memory_used_gb,
+        "gpu_memory_total_gb": node.gpu_memory_total_gb,
+        "gpu_temperature": node.gpu_temperature,
+        "kv_cache_usage": node.kv_cache_usage,
+        "avg_token_latency": node.avg_token_latency,
+        "num_requests_running": node.num_requests_running,
+        "num_requests_waiting": node.num_requests_waiting,
     }
 
 

@@ -1,0 +1,11 @@
+**/.venv
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+**/*.db
+**/.env
+**/.claude
+.git
+deploy/prometheus/grafana-data
+deploy/prometheus/prometheus-data

@@ -56,3 +56,17 @@ async def check_vllm_health() -> bool:
             return r.status_code == 200
     except Exception:
         return False
+
+
+async def forward_chat_completion_stream(payload: dict):
+    """Yield raw SSE bytes from vLLM for streaming chat-completion responses."""
+    url = f"{settings.VLLM_URL}/v1/chat/completions"
+    if payload.get("model") in ("auto", "", None):
+        actual = await _get_actual_model()
+        if actual:
+            payload = {**payload, "model": actual}
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        async with client.stream("POST", url, json=payload) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                yield chunk
