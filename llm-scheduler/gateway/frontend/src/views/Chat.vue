@@ -295,6 +295,20 @@ async function sendStream(chatMessages) {
   try {
     const auth = JSON.parse(localStorage.getItem('auth') || '{}')
     const token = auth.token || ''
+
+    // Check token expiration before sending request
+    if (!token) {
+      throw new Error('未登录，请重新登录')
+    }
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.exp && payload.exp * 1000 < Date.now()) {
+        throw new Error('登录已过期，请重新登录')
+      }
+    } catch (e) {
+      if (e.message.includes('登录')) throw e
+    }
+
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -310,6 +324,12 @@ async function sendStream(chatMessages) {
     })
 
     if (!resp.ok) {
+      if (resp.status === 401) {
+        // Token expired — redirect to login
+        localStorage.removeItem('auth')
+        localStorage.removeItem('llm_token')
+        throw new Error('登录已过期，请重新登录')
+      }
       const err = await resp.json().catch(() => ({ detail: resp.statusText }))
       throw new Error(err.detail || 'Stream request failed')
     }
