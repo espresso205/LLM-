@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "admin123"
     PORT: int = 8080
 
+    # ── LTR Queue settings ────────────────────────────────────────────────
+    USE_LTR_QUEUE: bool = False
+    LTR_MAX_CONCURRENT: int = 4
+    LTR_MAX_QUEUE_SIZE: int = 100
+    LTR_STARVATION_TIMEOUT: float = 30.0
+    LTR_STARVATION_BOOST: float = 0.8
+    LTR_PREDICTOR_TYPE: str = "heuristic"
+    LTR_TRAINING_DATA_PATH: str = "training_data.jsonl"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     def warn_insecure(self) -> None:

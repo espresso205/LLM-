@@ -1,4 +1,5 @@
 """Gateway FastAPI application."""
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -7,14 +8,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .config import settings
 from .database import init_db, close_db
 from .routers import auth, inference, history, admin
+
+_bg_tasks: list[asyncio.Task] = []
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+
+    if settings.USE_LTR_QUEUE:
+        from .queue import request_queue
+        from .collector import data_collector
+
+        _bg_tasks.append(asyncio.create_task(request_queue.dispatch_loop()))
+        _bg_tasks.append(asyncio.create_task(data_collector.flush_loop()))
+
     yield
+
+    for t in _bg_tasks:
+        t.cancel()
+    if _bg_tasks:
+        await asyncio.gather(*_bg_tasks, return_exceptions=True)
     await close_db()
 
 

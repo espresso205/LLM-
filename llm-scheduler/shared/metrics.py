@@ -57,6 +57,24 @@ NODE_STATUS = Gauge(
 )
 
 
+# ---- LTR Queue ----
+LTR_QUEUE_SIZE = Gauge(
+    "llm_ltr_queue_size",
+    "Current number of requests waiting in the LTR priority queue",
+)
+
+LTR_QUEUE_WAIT_SECONDS = Histogram(
+    "llm_ltr_queue_wait_seconds",
+    "Time requests spend waiting in the LTR queue before dispatch",
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0),
+)
+
+LTR_STARVATION_BOOSTS = Counter(
+    "llm_ltr_starvation_boosts_total",
+    "Number of times starvation prevention boosted a request's priority",
+)
+
+
 def metrics_response() -> Response:
     """Generate a Starlette Response with Prometheus exposition text."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

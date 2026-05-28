@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..auth import get_current_user
 from ..database import get_db
 from ..retry import forward_with_retry, forward_with_retry_stream
+from ..config import settings
 from shared.utils import get_logger
 
 log = get_logger(__name__)
@@ -60,7 +61,11 @@ async def _handle_non_stream(request: Request, body: dict, user: dict) -> JSONRe
     try:
         from shared.utils import timer
         with timer() as t:
-            response_data, node_id, actual_model = await forward_with_retry(request_id, body)
+            if settings.USE_LTR_QUEUE:
+                from ..queue import request_queue
+                response_data, node_id, actual_model = await request_queue.enqueue(request_id, body, user)
+            else:
+                response_data, node_id, actual_model = await forward_with_retry(request_id, body)
         latency_ms = t["ms"]
         status = "success"
         total_tokens = response_data.get("usage", {}).get("total_tokens", 0)
@@ -135,7 +140,11 @@ async def _handle_stream(request: Request, body: dict, user: dict) -> StreamingR
 
     # Pick node and establish stream
     try:
-        stream_gen, node_id, actual_model = await forward_with_retry_stream(request_id, body)
+        if settings.USE_LTR_QUEUE:
+            from ..queue import request_queue
+            stream_gen, node_id, actual_model = await request_queue.enqueue(request_id, body, user)
+        else:
+            stream_gen, node_id, actual_model = await forward_with_retry_stream(request_id, body)
     except Exception as exc:
         log.error(f"Stream request {request_id} failed to connect: {exc}")
         # Update log as error
