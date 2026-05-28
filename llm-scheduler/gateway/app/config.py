@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     LTR_STARVATION_TIMEOUT: float = 30.0
     LTR_STARVATION_BOOST: float = 0.8
     LTR_PREDICTOR_TYPE: str = "heuristic"
+    LTR_ML_MODEL_PATH: str = ""
     LTR_TRAINING_DATA_PATH: str = "training_data.jsonl"
 
     model_config = {"env_file": ".env", "extra": "ignore"}

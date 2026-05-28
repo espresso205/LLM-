@@ -52,6 +52,13 @@ def _make_predictor() -> LengthPredictor:
         return HeuristicPredictor()
     if predictor_type == "passthrough":
         return PassthroughPredictor()
+    if predictor_type == "ml":
+        from .predictor_ml import LTRPredictor
+        model_path = settings.LTR_ML_MODEL_PATH
+        if not model_path:
+            log.warning("LTR_ML_MODEL_PATH not set, falling back to heuristic")
+            return HeuristicPredictor()
+        return LTRPredictor(model_path)
     # Default to heuristic for unknown types
     log.warning(f"Unknown LTR_PREDICTOR_TYPE '{predictor_type}', falling back to heuristic")
     return HeuristicPredictor()

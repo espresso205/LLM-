@@ -48,3 +48,9 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# LTR training artifacts
+*.pt
+training_data.jsonl
+benchmark_results.json
+benchmark_cdf.png
