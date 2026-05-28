@@ -1,12 +1,15 @@
-"""Train a RankingMLP model using ListMLE loss.
+"""Train a Semantic Ranking model using ListMLE loss.
 
-Reads training data (JSONL) collected by the gateway's DataCollector,
-trains a 3-layer MLP to rank requests by predicted output length.
+Aligns with "Efficient LLM Scheduling by Learning to Rank" (NeurIPS 2024):
+- Sentence-Transformer encodes prompt semantics → 384-dim embedding
+- MLP head maps embeddings to ranking scores
+- ListMLE loss (vectorized, matching paper) trains the ranking
 
 Usage:
-    python scripts/train_ltr_model.py --generate-synthetic   # create test data
-    python scripts/train_ltr_model.py                        # train on real data
-    python scripts/train_ltr_model.py --epochs 100 -n 64     # custom params
+  python scripts/train_ltr_model.py --download-sharegpt       # download real data
+  python scripts/train_ltr_model.py                            # train on ShareGPT
+  python scripts/train_ltr_model.py --generate-synthetic       # synthetic test data
+  python scripts/train_ltr_model.py --epochs 20 -n 32         # custom params
 """
 import argparse
 import json
@@ -19,81 +22,187 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gateway.app.predictor_ml import RankingMLP, _extract_features
+from gateway.app.predictor_ml import SemanticRankingModel, _ENCODER_NAME
+
+_SHAREGPT_URL = "https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 
-# ── ListMLE loss ──────────────────────────────────────────────────────────
+# ── ListMLE loss (vectorized, matching paper) ──────────────────────────────
 
 
 def list_mle_loss(scores: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """ListMLE ranking loss (the paper's key contribution).
+    """Vectorized ListMLE loss matching the paper's allRank implementation.
 
-    Encourages the model to rank items in the same relative order as *targets*.
+    1. Random shuffle for tie resolution (paper: torch.randperm)
+    2. Sort by targets descending
+    3. Compute log-sum-exp chain (vectorized cumsum)
     """
+    n = scores.shape[0]
+    if n < 2:
+        return torch.tensor(0.0, requires_grad=True)
+
+    # Random shuffle for tie resolution (paper does this)
+    perm = torch.randperm(n)
+    scores = scores[perm]
+    targets = targets[perm]
+
+    # Sort by targets descending
     sorted_indices = torch.argsort(targets, descending=True)
     sorted_scores = scores[sorted_indices]
 
-    n = sorted_scores.shape[0]
-    log_probs: list[torch.Tensor] = []
-    for i in range(n):
-        remaining = sorted_scores[i:]
-        log_softmax = torch.log_softmax(remaining, dim=0)
-        log_probs.append(log_softmax[0])
+    # Numerical stability: subtract max
+    max_score = sorted_scores.max()
+    stabilized = sorted_scores - max_score
 
-    return -torch.stack(log_probs).sum()
+    # Vectorized: cumsum of exp from right to left
+    exp_scores = stabilized.exp()
+    cumsum = torch.cumsum(exp_scores.flip(0), dim=0).flip(0)
+
+    # ListMLE: -sum(log(cumsum + eps) - stabilized)
+    loss = (torch.log(cumsum + 1e-10) - stabilized).sum()
+    return loss
 
 
-# ── Synthetic data generation ─────────────────────────────────────────────
+# ── Data loading ────────────────────────────────────────────────────────────
 
 
-def generate_synthetic(path: str, n: int = 1000) -> None:
-    """Create synthetic training data for pipeline testing."""
+def download_sharegpt(output_path: str, max_samples: int = 20000) -> None:
+    """Download ShareGPT dataset and extract prompt + completion token counts."""
+    print(f"Downloading ShareGPT dataset...")
+    try:
+        from datasets import load_dataset
+        ds = load_dataset(
+            "anon8231489123/ShareGPT_Vicuna_unfiltered",
+            data_files="ShareGPT_V3_unfiltered_cleaned_split.json",
+            split="train",
+        )
+    except Exception:
+        # Fallback: direct download
+        import urllib.request
+        import json as _json
+        print("Using direct download fallback...")
+        tmp = "sharegpt_raw.json"
+        urllib.request.urlretrieve(_SHAREGPT_URL, tmp)
+        with open(tmp, encoding="utf-8") as f:
+            raw = _json.load(f)
+        records = []
+        for conv in raw[:max_samples * 2]:
+            if "conversations" not in conv:
+                continue
+            human_msgs = [t["value"] for t in conv["conversations"] if t.get("from") == "human"]
+            gpt_msgs = [t["value"] for t in conv["conversations"] if t.get("from") == "gpt"]
+            if human_msgs and gpt_msgs:
+                prompt = human_msgs[-1]
+                completion = gpt_msgs[-1]
+                # Simple token count approximation (words * 1.3)
+                comp_tokens = max(1, int(len(completion.split()) * 1.3))
+                records.append({
+                    "prompt": prompt,
+                    "completion_tokens": comp_tokens,
+                })
+            if len(records) >= max_samples:
+                break
+        with open(output_path, "w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"Saved {len(records)} samples → {output_path}")
+        return
+
+    records = []
+    for item in ds:
+        conversations = item.get("conversations", [])
+        human_msgs = [t["value"] for t in conversations if t.get("from") == "human"]
+        gpt_msgs = [t["value"] for t in conversations if t.get("from") == "gpt"]
+        if human_msgs and gpt_msgs:
+            prompt = human_msgs[-1]
+            completion = gpt_msgs[-1]
+            comp_tokens = max(1, int(len(completion.split()) * 1.3))
+            records.append({"prompt": prompt, "completion_tokens": comp_tokens})
+        if len(records) >= max_samples:
+            break
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"Saved {len(records)} samples → {output_path}")
+
+
+def generate_synthetic(path: str, n: int = 2000) -> None:
+    """Generate synthetic data with realistic prompt texts."""
     rng = random.Random(42)
-    records: list[dict] = []
+    short_prompts = [
+        "Hi", "What is 2+2?", "Say hello", "Yes or no?", "Tell me a joke",
+        "Define algorithm in one sentence", "What's the capital of France?",
+        "Translate hello to French", "Give me three colors", "1+1=?",
+    ]
+    long_prompts = [
+        "Write a comprehensive essay on the impact of artificial intelligence on modern society, covering economic, social, and ethical implications",
+        "Provide a detailed comparison of Python, JavaScript, and Go as backend programming languages, including performance benchmarks and ecosystem",
+        "Explain the complete lifecycle of a web request from browser to server and back, including DNS, TCP, TLS, HTTP, and response rendering",
+        "Discuss the philosophical implications of consciousness in artificial systems and what it means for the future of AI",
+    ]
+    medium_prompts = [
+        "Explain how neural networks work in a few paragraphs",
+        "Compare REST and GraphQL APIs",
+        "Describe the water cycle in detail",
+        "What are the pros and cons of microservices?",
+        "Summarize containerization in 200 words",
+    ]
+    records = []
     for i in range(n):
-        char_count = rng.randint(10, 2000)
-        word_count = max(1, char_count // 5 + rng.randint(-5, 5))
-        max_tokens = rng.choice([64, 128, 256, 512, 1024])
-        msg_count = rng.randint(1, 12)
-        last_len = rng.randint(5, 500)
-        # Correlated output: longer prompts & higher max_tokens → more output
-        base = char_count * 0.05 + last_len * 0.1 + max_tokens * 0.3
-        actual = max(5, int(base * rng.uniform(0.5, 1.5)))
-        actual = min(actual, max_tokens)
-        records.append({
-            "request_id": f"syn-{i:04d}",
-            "prompt_char_count": char_count,
-            "prompt_word_count": word_count,
-            "max_tokens": max_tokens,
-            "message_count": msg_count,
-            "last_message_length": last_len,
-            "actual_completion_tokens": actual,
-        })
+        r = rng.random()
+        if r < 0.3:
+            prompt = rng.choice(short_prompts)
+            tokens = rng.randint(5, 50)
+        elif r < 0.7:
+            prompt = rng.choice(medium_prompts)
+            tokens = rng.randint(50, 250)
+        else:
+            prompt = rng.choice(long_prompts)
+            tokens = rng.randint(250, 800)
+        records.append({"prompt": prompt, "completion_tokens": tokens})
     with open(path, "w", encoding="utf-8") as f:
         for r in records:
-            f.write(json.dumps(r) + "\n")
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
     print(f"Generated {n} synthetic samples → {path}")
 
 
-# ── Training ──────────────────────────────────────────────────────────────
-
-
-def load_data(path: str) -> tuple[list[list[float]], list[float]]:
-    """Load JSONL training data → (features, targets)."""
-    features: list[list[float]] = []
-    targets: list[float] = []
+def load_data(path: str) -> tuple[list[str], list[int]]:
+    """Load JSONL → (prompt_texts, completion_token_counts)."""
+    texts: list[str] = []
+    tokens: list[int] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             rec = json.loads(line.strip())
-            features.append([
-                float(rec.get("prompt_char_count", 0)),
-                float(rec.get("prompt_word_count", 0)),
-                float(rec.get("max_tokens", 512)),
-                float(rec.get("message_count", 1)),
-                float(rec.get("last_message_length", 0)),
-            ])
-            targets.append(float(rec.get("actual_completion_tokens", 0)))
-    return features, targets
+            prompt = rec.get("prompt", "")
+            if not prompt:
+                continue
+            texts.append(prompt)
+            tokens.append(int(rec.get("completion_tokens", 100)))
+    return texts, tokens
+
+
+# ── Kendall's tau ──────────────────────────────────────────────────────────
+
+
+def kendall_tau(predicted: list[float], actual: list[float]) -> float:
+    """Compute Kendall's tau (O(n^2) pairwise)."""
+    n = len(predicted)
+    if n < 2:
+        return 0.0
+    concordant = 0
+    total = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            total += 1
+            p = (predicted[i] > predicted[j]) - (predicted[i] < predicted[j])
+            a = (actual[i] > actual[j]) - (actual[i] < actual[j])
+            if p == a:
+                concordant += 1
+    return (2.0 * concordant / total) - 1.0
+
+
+# ── Training ────────────────────────────────────────────────────────────────
 
 
 def train(
@@ -102,29 +211,28 @@ def train(
     epochs: int,
     batch_size: int,
 ) -> None:
-    features, targets = load_data(data_path)
-    n = len(features)
+    texts, targets = load_data(data_path)
+    n = len(texts)
     print(f"Loaded {n} samples from {data_path}")
 
     if n < batch_size:
         batch_size = n
-        print(f"Reduced batch_size to {batch_size}")
 
-    # Normalize features
-    n_feats = len(features[0])
-    feat_mean = [sum(f[d] for f in features) / n for d in range(n_feats)]
-    feat_std = [
-        (sum((f[d] - feat_mean[d]) ** 2 for f in features) / n) ** 0.5
-        for d in range(n_feats)
-    ]
-    feat_std = [s if s > 0 else 1.0 for s in feat_std]
-    features_norm = [
-        [(f[d] - feat_mean[d]) / feat_std[d] for d in range(n_feats)]
-        for f in features
-    ]
+    print(f"Pre-computing embeddings with {_ENCODER_NAME}...")
+    model = SemanticRankingModel()
+    # Pre-compute all embeddings in batches to avoid OOM
+    emb_batches: list[torch.Tensor] = []
+    encode_batch = 64
+    for start in range(0, n, encode_batch):
+        batch_texts = texts[start:start + encode_batch]
+        emb_batches.append(model.encode(batch_texts))
+        pct = min(100, int((start + encode_batch) / n * 100))
+        if pct % 25 == 0:
+            print(f"  Encoding: {pct}%")
+    all_embeddings = torch.cat(emb_batches, dim=0)
+    print(f"Embeddings shape: {all_embeddings.shape}")
 
-    model = RankingMLP()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    all_targets = torch.tensor(targets, dtype=torch.float32)
 
     # Split 90/10
     split = int(n * 0.9)
@@ -133,19 +241,26 @@ def train(
     train_idx = indices[:split]
     val_idx = indices[split:]
 
+    train_embs = all_embeddings[train_idx]
+    train_targets = all_targets[train_idx]
+    val_embs = all_embeddings[val_idx]
+    val_targets_list = [targets[i] for i in val_idx]
+
+    optimizer = torch.optim.Adam(model.mlp.parameters(), lr=1e-3)
+
     for epoch in range(1, epochs + 1):
-        model.train()
-        random.shuffle(train_idx)
+        model.mlp.train()
+        perm = torch.randperm(len(train_idx))
         epoch_loss = 0.0
         n_batches = 0
 
-        for start in range(0, len(train_idx), batch_size):
-            batch_idx = train_idx[start:start + batch_size]
-            x = torch.tensor([features_norm[i] for i in batch_idx], dtype=torch.float32)
-            y = torch.tensor([targets[i] for i in batch_idx], dtype=torch.float32)
+        for start in range(0, len(perm), batch_size):
+            batch_perm = perm[start:start + batch_size]
+            embs = train_embs[batch_perm]
+            tgt = train_targets[batch_perm]
 
-            scores = model(x)
-            loss = list_mle_loss(scores, y)
+            scores = model.mlp(embs)
+            loss = list_mle_loss(scores, tgt)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -154,49 +269,45 @@ def train(
             n_batches += 1
 
         avg_loss = epoch_loss / max(n_batches, 1)
-        if epoch % 10 == 0 or epoch == 1:
+        if epoch % 5 == 0 or epoch == 1:
             print(f"Epoch {epoch:3d}/{epochs}  loss={avg_loss:.4f}")
 
-    # Validate with Kendall's tau (concordant pairs / total pairs)
-    model.eval()
-    val_x = torch.tensor([features_norm[i] for i in val_idx], dtype=torch.float32)
-    val_y = [targets[i] for i in val_idx]
+    # Validate
+    model.mlp.eval()
     with torch.no_grad():
-        val_scores = model(val_x).tolist()
-    if len(val_y) > 1:
-        n_concordant = 0
-        n_total = 0
-        for i in range(len(val_y)):
-            for j in range(i + 1, len(val_y)):
-                n_total += 1
-                score_order = (val_scores[i] > val_scores[j]) - (val_scores[i] < val_scores[j])
-                target_order = (val_y[i] > val_y[j]) - (val_y[i] < val_y[j])
-                if score_order == target_order:
-                    n_concordant += 1
-        tau = (2.0 * n_concordant / n_total) - 1.0 if n_total > 0 else 0.0
-        print(f"\nValidation Kendall's tau: {tau:.4f}")
+        val_scores = model.mlp(val_embs).tolist()
+    tau = kendall_tau(val_scores, val_targets_list)
+    print(f"\nValidation Kendall's tau: {tau:.4f}")
 
-    # Save
+    # Save (only MLP weights — encoder is re-loaded from HF at inference time)
     torch.save({
-        "model_state": model.state_dict(),
-        "feat_mean": feat_mean,
-        "feat_std": feat_std,
+        "architecture": "semantic",
+        "encoder_name": _ENCODER_NAME,
+        "mlp_state": model.mlp.state_dict(),
     }, output_path)
     print(f"Model saved to {output_path}")
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────
+# ── CLI ────────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train LTR RankingMLP")
-    parser.add_argument("--data", default="training_data.jsonl", help="JSONL training data")
+    parser = argparse.ArgumentParser(description="Train Semantic LTR Model")
+    parser.add_argument("--data", default="sharegpt_train.jsonl", help="JSONL training data")
     parser.add_argument("--output", default="ltr_model.pt", help="Output model path")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("-n", "--batch-size", type=int, default=32)
+    parser.add_argument("--download-sharegpt", action="store_true",
+                        help="Download ShareGPT dataset")
     parser.add_argument("--generate-synthetic", action="store_true",
-                        help="Generate synthetic training data for testing")
+                        help="Generate synthetic data for testing")
+    parser.add_argument("--max-samples", type=int, default=20000,
+                        help="Max samples to download from ShareGPT")
     args = parser.parse_args()
+
+    if args.download_sharegpt:
+        download_sharegpt(args.data, args.max_samples)
+        return
 
     if args.generate_synthetic:
         generate_synthetic(args.data)

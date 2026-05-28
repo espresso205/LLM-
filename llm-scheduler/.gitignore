@@ -52,5 +52,7 @@ Thumbs.db
 # LTR training artifacts
 *.pt
 training_data.jsonl
+sharegpt_train.jsonl
+sharegpt_raw.json
 benchmark_results.json
 benchmark_cdf.png
